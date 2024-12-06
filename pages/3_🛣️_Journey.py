@@ -11,6 +11,7 @@ import torch
 
 from pages.utils.google_map_utils import get_route, get_petronas_stations_along_route
 from pages.utils.custom_model_utils import preprocess_input, load_model
+from pages.utils.text_gen_utils import generate_answer
 
 
 dirname = os.path.dirname(__file__)
@@ -56,7 +57,7 @@ def render_route_planner():
        # Route input
     col1, col2 = st.columns(2)
     with col1:
-        origin = st.text_input("Starting Point", "Setel Venture, Bangsar South")
+        origin = st.text_input("Starting Point", "Genting Highlands")
     with col2:
         destination = st.text_input("Destination", "Atas Tol Kuala Terengganu")
     
@@ -92,7 +93,7 @@ def render_route_planner():
                     st.write(f"Number of stations found: {len(df)}")
                     
                     with st.container(border=True):
-                        predictor()
+                        predictor(int(route_info['distance']['text'].split()[0]), route)
 
 
 def create_route_map(df, route):
@@ -134,14 +135,12 @@ def create_route_map(df, route):
     markercluster1 = MarkerCluster().add_to(m)
     for idx, row in df.iterrows():
         petronas_pin = folium.CustomIcon(icon_image= dirname + "/img/petronas.webp", icon_size=(50, 50))
+        summarized_reviews = generate_answer("Summarize the following reviews in one paragraph in 100 words max plain text:\n" + '\n'.join(
+            [f"{key}: {val}" for doc in row['Reviews'][:3] for key, val in doc.items()]
+        ))
         reviews_html = ""
         if len(row['Reviews']) > 0:
-            reviews_html = "<br><br><b>Recent Reviews:</b><br>"
-            for review in row['Reviews'][:3]:
-                reviews_html += f"""
-                    ⭐ {review.get('rating', 'N/A')}/5 - {review.get('relative_time_description', '')}<br>
-                    "{review.get('text', 'No comment')}"<br><br>
-                """
+            reviews_html = "<br><br><b>Summarized Reviews:</b><br>" + summarized_reviews
 
         popup_html = f"""
             <div style='width: 300px'>
@@ -169,11 +168,7 @@ def create_route_map(df, route):
     
     st_folium(m, width=1200, returned_objects=[])
 
-# Streamlit app
-def predictor():
-    st.title('Vehicle Emission and Fuel Consumption Predictor')
-    
-    # Input fields
+def predictor(length, route):
     vehicle_class = st.selectbox('Vehicle Class', [
         'COMPACT',
         'SUV - SMALL',
@@ -230,7 +225,6 @@ def predictor():
         'E',
         'N',
     ])
-    
     # Preprocess input
     input_data = preprocess_input(vehicle_class, engine_size, cylinders, transmission, fuel_type)
     
@@ -238,10 +232,38 @@ def predictor():
     model = load_model()
     with torch.no_grad():
         prediction = model(torch.FloatTensor(input_data))
-    
     # Display results
     st.write('Predicted CO2 Emissions (g/km):', prediction[0][0].item())
     st.write('Predicted Fuel Consumption (L/100 km):', prediction[0][1].item())
+    
+    st.session_state["co2_emission"] = prediction[0][0].item()
+    st.session_state["fuel_consumption"] = prediction[0][1].item()
+
+    # Predicted Monthly Fuel Cost (Dynamic)
+    predicted_fuel_cost = length * st.session_state["fuel_consumption"]  * 3.19 / 100
+
+    
+    # CO2 Emissions (Dynamic)
+    col6, col7 = st.columns(2)
+    co2_emissions = length * st.session_state["co2_emission"] / 1000
+    with col6:
+        st.markdown(f"""
+                <h3>Predicted CO2 Emissions</h3>
+                <h2>{co2_emissions:.2f} kg</h2>
+                <p>Based on your predicted mileage</p>
+        """, unsafe_allow_html=True)
+        
+    with col7:
+        st.markdown(f"""
+                <h3>Predicted Fuel Cost (RON 97)</h3>
+                <h2>RM {predicted_fuel_cost:.2f}</h2>
+                <p>Estimated based on mileage</p>
+        """, unsafe_allow_html=True)
+    
+    end_location = route[0]['legs'][0]['end_location']
+    parking_rate = generate_answer("Estimate roughly the Parking rate in  MYR currency for destination longitude " + str(end_location['lng'])  + " , latitude " + str(end_location['lat']) + "\nDisplay the result in plain text with no futher explaination")
+    st.write('Predicted Destination Parking Rate:', parking_rate)
+    
 
 def main():
     """Main function to render the Streamlit application"""

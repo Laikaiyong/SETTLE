@@ -1,192 +1,204 @@
 import streamlit as st
-from pymongo import MongoClient
-import os
+import pymongo
+import certifi
+import random
 
+from pages.utils.search_button_utils import get_embedding, vector_search
+from functools import partial
 
+# MongoDB connection setup
+ca = certifi.where()
+MONGO_URI = st.secrets["mongo"]["host"]
+
+@st.cache_resource
+def init_connection():
+    return pymongo.MongoClient(MONGO_URI, tlsCAFile=ca)
 
 def config():
-    """Configure Streamlit page settings and custom CSS"""
+    """Configure Streamlit page settings and custom CSS."""
     st.set_page_config(
         page_title="SETTLE Home",
         page_icon="🚗",
         layout="wide"
     )
-    
-    # Custom CSS to mimic the HTML styling
     st.markdown("""
         <style>
-        /* Reset and base styles */
-        * {
-            box-sizing: border-box;
+        * { box-sizing: border-box; }
+        body { font-family: Arial, sans-serif; }
+        .container { padding: 20px; }
+        .section-title { text-align: center; font-size: 2em; margin-bottom: 20px; }
+        .card { 
+            border: 1px solid #ddd; 
+            border-radius: 8px; 
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1); 
+            padding: 10px; 
+            text-align: center; 
+            margin: 10px; 
+            background-color: #fff; 
+            height: 250px; 
+            display: flex; 
+            flex-direction: column; 
+            justify-content: space-between; 
         }
-        
-        /* Floating bar styles */
-        .floating-bar {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            background-color: #333;
-            color: white;
-            display: flex;
-            justify-content: space-between;
-            padding: 10px 20px;
-            z-index: 1000;
+        .card img { 
+            max-width: 100%; 
+            max-height: 150px; 
+            object-fit: cover; 
+            border-radius: 5px; 
+            margin-bottom: 10px; 
         }
-        
-        .floating-bar-item {
-            display: flex;
-            align-items: center;
+        .card-name { 
+            font-size: 1.2em; 
+            font-weight: bold; 
+            color: #333; 
+            cursor: pointer; 
         }
-        
-        .floating-bar-item span {
-            margin-left: 5px;
+        .card-clicks {
+            font-size: 1em; 
+            color: #666;
         }
-        
-        /* Container and section styles */
-        .container {
-            padding: 80px 20px 20px;
+        .highlighted { 
+            background-color: #fffae6; 
+            border: 2px solid #ffd700; 
         }
-        
-        .section {
-            margin-bottom: 40px;
-        }
-        
-        .section-title {
+        .search-container {
             margin-bottom: 20px;
+            text-align: center;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 10px; /* Space between the input and button */
         }
-        
-        /* Button grid styles */
-        .button-grid {
-            display: grid;
-            grid-template-columns: repeat(4, 1fr);
-            grid-gap: 20px;
-        }
-        
-        .stButton > button {
-            width: 100%;
-            height: 100%;
-            background-color: white !important;
-            border: none !important;
-            border-radius: 5px !important;
-            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1) !important;
-            transition: background-color 0.3s ease !important;
-        }
-        
-        .stButton > button:hover {
-            background-color: #f0f0f0 !important;
-        }
-        </style>
-        """, unsafe_allow_html=True)
 
-def render_floating_bar():
-    """Render the top floating bar with user information"""
-    st.markdown("""
-        <style>
-        .floating-bar {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            background-color: #333;
-            color: white;
-            display: flex;
-            justify-content: space-around;
-            align-items: center;
-            padding: 10px 0;
-            z-index: 1000;
-            font-family: Arial, sans-serif;
-        }
-        .floating-bar-item {
-            display: flex;
-            align-items: center;
-            color: white;
+        .search-container input {
+            padding: 10px;
+            border: 2px solid #ddd;
+            border-radius: 5px;
             font-size: 16px;
+            width: 50%; /* Adjust width as per your layout */
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
         }
-        .floating-bar-item i {
-            margin-right: 8px;
+
+        .search-container input:focus {
+            border-color: #ffa500;
+            outline: none;
+            box-shadow: 0 2px 8px rgba(255, 165, 0, 0.5);
+        }
+
+        .search-container button {
+            padding: 10px 20px;
+            background-color: #ffa500;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            font-size: 16px;
+            cursor: pointer;
+            box-shadow: 0 2px 8px rgba(255, 165, 0, 0.5);
+        }
+
+        .search-container button:hover {
+            background-color: #ff8c00;
         }
         </style>
-        <div class="floating-bar">
-            <div class="floating-bar-item">
-                <i class="fas fa-wallet"></i>
-                <span>RM 250.00</span>
-            </div>
-            <div class="floating-bar-item">
-                <i class="fas fa-trophy"></i>
-                <span>2.0k pts</span>
-            </div>
-            <div class="floating-bar-item">
-                <i class="fas fa-car"></i>
-                <span>Toyota Vios</span>
-            </div>
-        </div>
     """, unsafe_allow_html=True)
 
-def fetch_data_from_mongo(collection_name):
+def render_section(title, items, highlight=False):
     """
-    Fetch data from a MongoDB collection
-    
-    Args:
-        collection_name (str): Name of the MongoDB collection
-    
-    Returns:
-        list: List of documents with name and picture URL
-    """
-    mongo_url = os.getenv("MONGO_URL", "mongodb://localhost:27017")  # Update with your MongoDB URL
-    client = MongoClient(mongo_url)
-    db = client["settle"]  # Replace with your database name
-    collection = db[collection_name]
-    return list(collection.find({}, {"_id": 0, "name": 1, "picture_url": 1}))
-
-def render_section(title, buttons):
-    """
-    Render a section with a title and grid of buttons
-    
+    Render a section with a title and grid of styled cards.
     Args:
         title (str): Section title
-        buttons (list): List of dictionaries with button name and picture URL
+        items (list): List of dictionaries with card details
+        highlight (bool): Whether to apply a highlight style to the cards
     """
     st.markdown(f'<h2 class="section-title">{title}</h2>', unsafe_allow_html=True)
-    
-    # Create button grid using Streamlit columns
-    num_columns = 4
-    rows = (len(buttons) + num_columns - 1) // num_columns
-    
-    for i in range(rows):
-        cols = st.columns(num_columns)
-        for j in range(num_columns):
-            idx = i * num_columns + j
-            if idx < len(buttons):
-                button = buttons[idx]
-                with cols[j]:
-                    st.markdown(f"""
-                        <div style="text-align: center;">
-                            <img src="{button['picture_url']}" alt="{button['name']}" style="width: 100%; border-radius: 5px; margin-bottom: 10px;">
-                            <button style="width: 100%; background-color: #fff; border: none; border-radius: 5px; box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);">
-                                {button['name']}
-                            </button>
-                        </div>
-                    """, unsafe_allow_html=True)
-
-def main():
-    """Main function to render the Streamlit application"""
-    config()
-    render_floating_bar()  # Render the floating bar first
-    
-    # Add space to ensure the rest of the content is not overlapped
-    st.markdown("<div style='height: 60px;'></div>", unsafe_allow_html=True)
-
-    # Container for sections
     st.markdown('<div class="container">', unsafe_allow_html=True)
     
-    # Fetch and render sections
-    highlights = fetch_data_from_mongo("highlights")
-    recommended = fetch_data_from_mongo("recommended")
-    all_items = fetch_data_from_mongo("all_items")
+    cols = st.columns(4)  # Four columns for grid layout
+    for idx, item in enumerate(items):
+        with cols[idx % 4]:  # Cycle through columns
+            card_class = "card highlighted" if highlight else "card"
+            st.markdown(f"""
+                <div class="{card_class}">
+                    <img src="{item['picture_url']}" alt="{item['name']}">
+                    <div class="card-name">{item['name']}</div>
+                    <div class="card-clicks">Clicks: {item['clicks']}</div>
+                </div>
+            """, unsafe_allow_html=True)
+
+            # Bind a unique function for each button using partial
+            if st.button("Select", key=f"click_{item['name']} + {str(random.random())}", on_click=partial(increment_clicks, item["name"])):
+                st.success(f"Clicked on {item['name']}!")
+                
+def click_incrementing(item_name):
+    st.session_state["item_name"] = item_name
+    increment_clicks(st.session_state["item_name"])
+
+
+def increment_clicks(item_name):
+    """
+    Increment clicks for a specific item.
+    Args:
+        collection_name (str): Name of the collection
+        item_name (str): Name of the item to increment clicks for
+    """
+    try:
+        client = init_connection()
+        if not client:
+            return
+        
+        db = client["Home"]
+        collection = db["Home Icons"]
+        
+        collection.update_one(
+            {"name": item_name},
+            {"$inc": {"clicks": 1}}
+        )
+    except Exception as e:
+        st.error(f"Error incrementing clicks for {item_name}: {e}")
+
+
+def main():
+    """Main function to render the Streamlit application."""
+    config()
     
-    render_section("Highlights", highlights)
-    render_section("Recommended", recommended)
-    render_section("All", all_items)
+    # Styled Search Box with Button
+    col_1, col_2 = st.columns(2)
     
-    st.markdown('</div>', unsafe_allow_html=True)
+    with col_1:
+        search_word = st.text_input("Search")
+    
+    with col_2:
+        searchClicked = st.button("🔎")
+
+    if searchClicked:
+        if search_word == None or search_word == "":
+            st.warning("Keyword / Question is not typed")
+        else:
+            search_results = vector_search(search_word)
+            render_section("Search Result", search_results)
+            
+
+    try:
+        client = init_connection()
+        db = client["Home"]
+        collection = db["Home Icons"]
+        items = list(collection.find({}, {
+            "_id": 0,
+            "name": 1,
+            "picture_url": 1,
+            "clicks": 1
+        }))
+        
+        # Fetch top 4 items with the highest clicks
+        highlighted_items = sorted(items, key=lambda x: x['clicks'], reverse=True)[:4]
+        
+        # Render highlighted section
+        render_section("Most Popular", highlighted_items, highlight=True)
+        
+        # Render all items section
+        render_section("All Items", items)
+    except Exception as e:
+        st.error(f"Error fetching data: {e}")
+
+if __name__ == "__main__":
+    main()
